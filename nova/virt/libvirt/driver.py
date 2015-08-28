@@ -223,6 +223,10 @@ libvirt_opts = [
                  default=[],
                  help='Specific cachemodes to use for different disk types '
                       'e.g: file=directsync,block=none'),
+    cfg.ListOpt('disk_iomodes',
+                default=[],
+                help='Specific io_modes to use for different disk types '
+                     'e.g: file=native,block=threads'),
     cfg.StrOpt('rng_dev_path',
                 help='A path to a device that will be used as source of '
                      'entropy on the host. Permitted options are: '
@@ -410,6 +414,7 @@ class LibvirtDriver(driver.ComputeDriver):
         self._event_queue = None
 
         self._disk_cachemode = None
+        self._disk_io_mode = None
         self.image_cache_manager = imagecache.ImageCacheManager()
         self.image_backend = imagebackend.Backend(CONF.use_cow_images)
 
@@ -422,6 +427,13 @@ class LibvirtDriver(driver.ComputeDriver):
                                  "directsync",
                                  "unsafe",
                                 ]
+
+        self.disk_iomodes = {}
+
+        self.valid_iomodes = ["native",
+                              "threads",
+                             ]
+
         self._conn_supports_start_paused = CONF.libvirt.virt_type in ('kvm',
                                                                       'qemu')
 
@@ -433,6 +445,15 @@ class LibvirtDriver(driver.ComputeDriver):
                          {'cache_mode': cache_mode, 'disk_type': disk_type})
                 continue
             self.disk_cachemodes[disk_type] = cache_mode
+
+        for io_mode_str in CONF.libvirt.disk_iomodes:
+            disk_type, sep, io_mode = io_mode_str.partition('=')
+            if io_mode not in self.valid_iomodes:
+                LOG.warn(_LW('Invalid io_mode %(io_mode)s specified '
+                             'for disk type %(disk_type)s.'),
+                         {'io_mode': io_mode, 'disk_type': disk_type})
+                continue
+            self.disk_iomodes[disk_type] = io_mode
 
         self._volume_api = volume.API()
         self._image_api = image.API()
@@ -461,6 +482,16 @@ class LibvirtDriver(driver.ComputeDriver):
                                        sysinfo_serial_funcs.keys())})
 
         self.job_tracker = instancejobtracker.InstanceJobTracker()
+
+    @property
+    def disk_iomode(self):
+        if self._disk_iomode is None:
+            # Default is 'threads' if not specified
+            # Setting this to 'native' can yield performance gains, however
+            # care must be taken to ensure that the guest vm is
+            # running raw and fully allocated
+            self._disk_iomode = "threads"
+        return self._disk_iomode
 
     @property
     def disk_cachemode(self):
@@ -494,6 +525,18 @@ class LibvirtDriver(driver.ComputeDriver):
         cache_mode = self.disk_cachemodes.get(source_type,
                                               driver_cache)
         conf.driver_cache = cache_mode
+
+    def _set_io_mode(self, conf):
+        """Set io mode on LibvirtConfigGuestDisk object."""
+        try:
+            source_type = conf.source_type
+            driver_io = conf.driver_io
+        except AttributeError:
+            return
+
+        io_mode = self.disk_iomodes.get(source_type,
+                                              driver_io)
+        conf.driver_io = io_mode
 
     @staticmethod
     def _conn_has_min_version(conn, lv_ver=None, hv_ver=None, hv_type=None):
@@ -1421,6 +1464,7 @@ class LibvirtDriver(driver.ComputeDriver):
         disk_info = blockinfo.get_info_from_bdm(CONF.libvirt.virt_type, bdm)
         conf = self._connect_volume(connection_info, disk_info)
         self._set_cache_mode(conf)
+        self._set_io_mode(conf)
 
         try:
             # NOTE(vish): We can always affect config because our
@@ -3444,6 +3488,7 @@ class LibvirtDriver(driver.ComputeDriver):
                                   disk_info['dev'],
                                   disk_info['type'],
                                   self.disk_cachemode,
+                                  self.disk_iomode,
                                   inst_type['extra_specs'],
                                   self._get_hypervisor_version())
 
@@ -3532,6 +3577,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
         for d in devices:
             self._set_cache_mode(d)
+            self._set_io_mode(d)
 
         if (image_meta and
                 image_meta.get('properties', {}).get('hw_scsi_model')):
