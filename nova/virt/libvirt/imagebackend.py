@@ -672,7 +672,7 @@ class Rbd(Image):
         if self.ceph_conf:
             self.path += ':conf=' + self.ceph_conf
 
-    def libvirt_info(self, disk_bus, disk_dev, device_type, cache_mode,
+    def libvirt_info(self, disk_bus, disk_dev, device_type, cache_mode, io_mode,
             extra_specs, hypervisor_version):
         """Get `LibvirtConfigGuestDisk` filled for this image.
 
@@ -688,6 +688,7 @@ class Rbd(Image):
         info.source_device = device_type
         info.driver_format = 'raw'
         info.driver_cache = cache_mode
+        info.driver_cache = io_mode
         info.driver_discard = self.discard_mode
         info.target_bus = disk_bus
         info.target_dev = disk_dev
